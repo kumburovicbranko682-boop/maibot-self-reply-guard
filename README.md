@@ -1,10 +1,10 @@
 # 机器人自回复硬拦截插件
 
-[![MaiBot](https://img.shields.io/badge/MaiBot-1.0.6%2B-blue)](https://github.com/Mai-with-u/MaiBot)
-[![SDK](https://img.shields.io/badge/maibot--plugin--sdk-2.5.4%2B-green)](https://github.com/Mai-with-u/MaiBot)
+[![MaiBot](https://img.shields.io/badge/MaiBot-1.0.0%2B-blue)](https://github.com/Mai-with-u/MaiBot)
+[![SDK](https://img.shields.io/badge/maibot--plugin--sdk-2.5.3%2B-green)](https://github.com/Mai-with-u/MaiBot)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-面向 MaiBot `v1.0.6+` 的独立修复插件。它不依赖提示词劝阻模型，而是在程序执行链上直接阻断「机器人回复自己的历史消息」。
+面向 MaiBot `v1.0.0+` 的独立修复插件。它不依赖提示词劝阻模型，而是在程序执行链上直接阻断「机器人回复自己的历史消息」。
 
 插件 ID：`github.kumburovicbranko682-boop.self-reply-guard`
 
@@ -14,14 +14,23 @@
 
 | 项目 | 要求 |
 |------|------|
-| MaiBot | `1.0.6` ~ `1.99.99` |
-| maibot-plugin-sdk | `2.5.4` ~ `2.99.99` |
+| MaiBot | `1.0.0` ~ `1.99.99` |
+| maibot-plugin-sdk | `2.5.3` ~ `2.99.99` |
+
+已对照官方源码标签核验 Hook 存在性：
+
+| MaiBot | 自带 SDK | Planner / Replyer / Send 四层 Hook |
+|--------|----------|-------------------------------------|
+| 1.0.0 | >=2.5.3 | 全部可用 |
+| 1.0.1 ~ 1.0.8 | >=2.5.4 | 全部可用 |
+| 1.0.9 | >=2.6.0 | 全部可用 |
+| 1.0.10 ~ 1.0.12 | >=2.7.0 | 全部可用 |
 
 ## 为什么能真正阻断
 
 插件完全通过 MaiBot 官方 Hook 工作，使用四层防线：
 
-1. `maisaka.planner.after_response`：发现 `reply` 的 `msg_id` 指向机器人自身消息时，直接从 `tool_calls` 删除该调用
+1. `maisaka.planner.after_response`：发现 `reply` 的目标指向机器人自身消息时，直接从 `tool_calls` 删除该调用
 2. `maisaka.replyer.before_request`：查询漏过前置过滤的 Replyer 目标并缓存发送者身份
 3. `maisaka.replyer.after_response`：对命中目标强制写回 `response = ""`、`retry = false`，让 MaiBot 判定生成失败
 4. `send_service.before_send`：真正发送前再次核验；命中配置账号或同发送者自回复时直接 `abort`
@@ -30,18 +39,20 @@
 
 ## 安装
 
-1. 将本仓库复制到 MaiBot 的 `plugins` 目录
+1. 将本仓库复制到 MaiBot 的 `plugins` 目录（建议目录名 `self_reply_guard`）
 2. 保证目录中直接包含 `_manifest.json`、`plugin.py` 和 `config.toml`
 3. 重启 MaiBot，确认日志出现「机器人自回复硬拦截插件已加载」
 
 ## 账号设置
 
-默认自动读取 MaiBot 主配置：
+默认自动读取 MaiBot 主配置（按顺序尝试）：
 
 ```toml
 [bot]
 qq_account = "123456789"
 ```
+
+也会尝试 `bot.account` / `bot.user_id` / `bot.qq`。
 
 多账号、旧账号消息或自动读取失败时，在本插件 `config.toml` 补充：
 
@@ -94,6 +105,13 @@ bot_accounts = ["123456789", "qq:987654321"]
 - 日志持续出现「查询目标消息失败」：确认 Manifest 已授权 `message.get_by_id`，并检查消息数据库
 - 多机器人共用一个群：把所有机器人 QQ 都加入 `identity.bot_accounts`
 - 需要临时排查：使用 `/自回复修复 关闭`，恢复后再 `/自回复修复 开启`
+
+## 开发验证
+
+```powershell
+python -m compileall -q .
+python -m unittest discover -s tests -v
+```
 
 ## 许可证
 

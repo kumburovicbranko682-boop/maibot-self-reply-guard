@@ -2,7 +2,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from pathlib import Path
 from types import SimpleNamespace
+
+import importlib.util
+
+_bootstrap_path = Path(__file__).resolve().parent / "_bootstrap.py"
+_spec = importlib.util.spec_from_file_location("self_reply_guard_test_bootstrap", _bootstrap_path)
+assert _spec and _spec.loader
+_bootstrap = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_bootstrap)
+_bootstrap.ensure_package()
 
 from self_reply_guard.plugin import SelfReplyGuardPlugin, create_plugin
 from self_reply_guard.storage import default_state
@@ -118,6 +128,31 @@ def test_reply_target_parser_supports_legacy_flat_tool_call() -> None:
             {"name": "reply", "arguments": {"msg_id": "target"}}
         )
         == "target"
+    )
+
+
+def test_reply_target_parser_supports_json_string_arguments() -> None:
+    assert (
+        SelfReplyGuardPlugin._reply_target_from_tool_call(
+            {
+                "id": "call-1",
+                "function": {
+                    "name": "reply",
+                    "arguments": '{"message_id": "json-target"}',
+                },
+            }
+        )
+        == "json-target"
+    )
+
+
+def test_kwargs_helpers_accept_stream_id_aliases() -> None:
+    assert (
+        SelfReplyGuardPlugin._session_id_from_kwargs({"stream_id": "s-1"}) == "s-1"
+    )
+    assert (
+        SelfReplyGuardPlugin._reply_message_id_from_kwargs({"msg_id": "m-1"})
+        == "m-1"
     )
 
 

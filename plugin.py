@@ -7,6 +7,7 @@ from time import monotonic
 from typing import Any
 
 import asyncio
+import json
 import re
 
 from maibot_sdk import Command, HookHandler, MaiBotPlugin, ON_BOT_CONFIG_RELOAD
@@ -20,6 +21,11 @@ from .identity import (
     sender_matches_accounts,
 )
 from .storage import atomic_write_json, default_state, load_state, now_text
+
+# 已对照 MaiBot 1.0.0 / 1.0.1 / 1.0.6 / 1.0.9 / 1.0.12 源码确认存在的四层 Hook。
+COMPAT_HOST_MIN = "1.0.0"
+COMPAT_HOST_MAX = "1.99.99"
+COMPAT_VERIFIED_HOSTS = ("1.0.0", "1.0.1", "1.0.6", "1.0.9", "1.0.12")
 
 
 class SelfReplyGuardPlugin(MaiBotPlugin):
@@ -69,9 +75,17 @@ class SelfReplyGuardPlugin(MaiBotPlugin):
                 CONFIG_VERSION,
             )
         self.ctx.logger.info(
-            "机器人自回复硬拦截插件已加载，当前状态：%s",
+            "机器人自回复硬拦截插件已加载，当前状态：%s；兼容 MaiBot %s-%s（已核验 %s）",
             "开启" if self._is_enabled() else "关闭",
+            COMPAT_HOST_MIN,
+            COMPAT_HOST_MAX,
+            "/".join(COMPAT_VERIFIED_HOSTS),
         )
+        if self._configured_account_count() <= 0:
+            self.ctx.logger.warning(
+                "当前未识别到机器人账号。请检查 bot.qq_account 或 identity.bot_accounts；"
+                "发送前仍可通过同发送者比对兜底拦截。"
+            )
 
     async def on_unload(self) -> None:
         """完成插件卸载。"""
@@ -169,7 +183,7 @@ class SelfReplyGuardPlugin(MaiBotPlugin):
 
         if not self._is_enabled():
             return {"action": "continue"}
-        session_id = str(kwargs.get("session_id") or "").strip()
+        session_id = self._session_id_from_kwargs(kwargs)
         tool_calls = kwargs.get("tool_calls")
         if not session_id or not isinstance(tool_calls, list) or not tool_calls:
             return {"action": "continue"}
@@ -219,8 +233,8 @@ class SelfReplyGuardPlugin(MaiBotPlugin):
 
         if not self._is_enabled():
             return {"action": "continue"}
-        session_id = str(kwargs.get("session_id") or "").strip()
-        reply_message_id = str(kwargs.get("reply_message_id") or "").strip()
+        session_id = self._session_id_from_kwargs(kwargs)
+        reply_message_id = self._reply_message_id_from_kwargs(kwargs)
         if not session_id or not reply_message_id:
             return {"action": "continue"}
         if await self._target_is_configured_bot(session_id, reply_message_id):
@@ -245,8 +259,8 @@ class SelfReplyGuardPlugin(MaiBotPlugin):
 
         if not self._is_enabled():
             return {"action": "continue"}
-        session_id = str(kwargs.get("session_id") or "").strip()
-        reply_message_id = str(kwargs.get("reply_message_id") or "").strip()
+        session_id = self._session_id_from_kwargs(kwargs)
+        reply_message_id = self._reply_message_id_from_kwargs(kwargs)
         if not session_id or not reply_message_id:
             return {"action": "continue"}
         if not await self._target_is_configured_bot(session_id, reply_message_id):
@@ -280,13 +294,14 @@ class SelfReplyGuardPlugin(MaiBotPlugin):
 
         if not self._is_enabled():
             return {"action": "continue"}
-        reply_message_id = str(kwargs.get("reply_message_id") or "").strip()
+        reply_message_id = self._reply_message_id_from_kwargs(kwargs)
         if not reply_message_id:
             return {"action": "continue"}
         outbound_message = kwargs.get("message")
-        session_id = self._message_session_id(outbound_message) or str(
-            kwargs.get("stream_id") or ""
-        ).strip()
+        session_id = (
+            self._message_session_id(outbound_message)
+            or self._session_id_from_kwargs(kwargs)
+        )
         target_message = await self._get_target_message(session_id, reply_message_id)
         if target_message is None:
             return {"action": "continue"}
@@ -330,21 +345,34 @@ class SelfReplyGuardPlugin(MaiBotPlugin):
     async def _get_target_message(
         self, session_id: str, reply_message_id: str
     ) -> dict[str, Any] | None:
-        try:
-            message = await self.ctx.message.get_by_id(
-                reply_message_id,
-                stream_id=session_id,
-                include_binary_data=False,
-            )
-        except Exception as error:
+        attempts: list[dict[str, Any]] = [
+            {"stream_id": session_id, "include_binary_data": False},
+            {"session_id": session_id, "include_binary_data": False},
+            {"include_binary_data": False},
+            {},
+        ]
+        last_error: Exception | None = None
+        for kwargs in attempts:
+            try:
+                message = await self.ctx.message.get_by_id(
+                    reply_message_id, **kwargs
+                )
+            except TypeError as error:
+                # 旧 SDK / 不同 Host 签名差异：换下一组参数继续试。
+                last_error = error
+                continue
+            except Exception as error:
+                last_error = error
+                break
+            return message if isinstance(message, dict) else None
+        if last_error is not None:
             self.ctx.logger.warning(
                 "查询自回复目标消息失败，已安全放行：session=%s target=%s error=%s",
                 session_id,
                 reply_message_id,
-                error,
+                last_error,
             )
-            return None
-        return message if isinstance(message, dict) else None
+        return None
 
     def _message_is_configured_bot(self, message: dict[str, Any]) -> bool:
         accounts = (*self.config.identity.bot_accounts, *self._runtime_accounts)
@@ -381,15 +409,26 @@ class SelfReplyGuardPlugin(MaiBotPlugin):
     async def _refresh_runtime_accounts(self) -> None:
         accounts: list[str] = []
         if self.config.plugin.auto_read_bot_account:
-            try:
-                qq_account = normalize_token(
-                    await self.ctx.config.get("bot.qq_account", "")
-                )
-            except Exception as error:
-                self.ctx.logger.warning("读取 bot.qq_account 失败：%s", error)
-                qq_account = ""
-            if qq_account and qq_account != "0":
-                accounts.append(f"qq:{qq_account}")
+            for key in (
+                "bot.qq_account",
+                "bot.account",
+                "bot.user_id",
+                "bot.qq",
+            ):
+                try:
+                    raw = str(await self.ctx.config.get(key, "") or "").strip()
+                except Exception as error:
+                    self.ctx.logger.warning("读取 %s 失败：%s", key, error)
+                    continue
+                value = normalize_token(raw)
+                if not value or value == "0":
+                    continue
+                if ":" in raw:
+                    accounts.append(f"{normalize_platform(raw.split(':', 1)[0])}:"
+                                    f"{normalize_token(raw.split(':', 1)[1])}")
+                else:
+                    accounts.append(f"qq:{value}")
+                break
         self._runtime_accounts = tuple(accounts)
 
     async def _record_block(
@@ -526,12 +565,51 @@ class SelfReplyGuardPlugin(MaiBotPlugin):
         return success, text, True
 
     @staticmethod
+    def _session_id_from_kwargs(kwargs: dict[str, Any]) -> str:
+        for key in ("session_id", "stream_id", "chat_id"):
+            value = str(kwargs.get(key) or "").strip()
+            if value:
+                return value
+        return ""
+
+    @staticmethod
+    def _reply_message_id_from_kwargs(kwargs: dict[str, Any]) -> str:
+        for key in ("reply_message_id", "msg_id", "message_id", "target_message_id"):
+            value = str(kwargs.get(key) or "").strip()
+            if value:
+                return value
+        return ""
+
+    @staticmethod
     def _message_session_id(message: Any) -> str:
-        return (
-            str(message.get("session_id") or "").strip()
-            if isinstance(message, dict)
-            else ""
-        )
+        if not isinstance(message, dict):
+            return ""
+        for key in ("session_id", "stream_id", "chat_id"):
+            value = str(message.get(key) or "").strip()
+            if value:
+                return value
+        message_info = message.get("message_info")
+        if isinstance(message_info, dict):
+            for key in ("session_id", "stream_id"):
+                value = str(message_info.get(key) or "").strip()
+                if value:
+                    return value
+        return ""
+
+    @staticmethod
+    def _coerce_arguments(arguments: Any) -> dict[str, Any]:
+        if isinstance(arguments, dict):
+            return arguments
+        if isinstance(arguments, str):
+            text = arguments.strip()
+            if not text:
+                return {}
+            try:
+                parsed = json.loads(text)
+            except json.JSONDecodeError:
+                return {}
+            return parsed if isinstance(parsed, dict) else {}
+        return {}
 
     @staticmethod
     def _reply_target_from_tool_call(tool_call: Any) -> str:
@@ -544,9 +622,14 @@ class SelfReplyGuardPlugin(MaiBotPlugin):
         else:
             function_name = tool_call.get("name")
             arguments = tool_call.get("arguments")
-        if normalize_token(function_name) != "reply" or not isinstance(arguments, dict):
+        if normalize_token(function_name) != "reply":
             return ""
-        return str(arguments.get("msg_id") or "").strip()
+        args = SelfReplyGuardPlugin._coerce_arguments(arguments)
+        for key in ("msg_id", "message_id", "reply_message_id", "target_id"):
+            value = str(args.get(key) or "").strip()
+            if value:
+                return value
+        return ""
 
     @staticmethod
     def _extract_arguments(

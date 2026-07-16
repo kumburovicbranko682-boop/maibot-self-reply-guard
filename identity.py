@@ -8,6 +8,8 @@ from typing import Any, Iterable
 PLATFORM_ALIASES = {
     "onebot": "qq",
     "napcat": "qq",
+    "llonebot": "qq",
+    "lagrange": "qq",
 }
 
 
@@ -39,17 +41,38 @@ def parse_account_spec(value: Any) -> tuple[str, str] | None:
     return normalize_platform(platform) or "*", normalized_account
 
 
+def _as_dict(value: Any) -> dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
 def extract_sender(message: Any) -> tuple[str, str]:
-    """从 MaiBot 序列化消息中提取平台和发送者账号。"""
+    """从 MaiBot 多版本消息结构中提取平台和发送者账号。
+
+    兼容常见字段：
+    - ``platform`` / ``message_info.platform``
+    - ``user_id`` / ``message_info.user_info.user_id`` / ``user_info.user_id``
+    """
 
     if not isinstance(message, dict):
         return "", ""
-    message_info = message.get("message_info")
-    message_info = message_info if isinstance(message_info, dict) else {}
-    user_info = message_info.get("user_info")
-    user_info = user_info if isinstance(user_info, dict) else {}
-    user_id = user_info.get("user_id", message.get("user_id", ""))
-    return normalize_platform(message.get("platform")), normalize_token(user_id)
+
+    message_info = _as_dict(message.get("message_info"))
+    user_info = _as_dict(message_info.get("user_info"))
+    if not user_info:
+        user_info = _as_dict(message.get("user_info"))
+
+    platform = normalize_platform(
+        message.get("platform")
+        or message_info.get("platform")
+        or user_info.get("platform")
+    )
+    user_id = normalize_token(
+        user_info.get("user_id")
+        or message.get("user_id")
+        or message_info.get("user_id")
+        or message.get("sender_id")
+    )
+    return platform, user_id
 
 
 def sender_matches_accounts(message: Any, account_specs: Iterable[Any]) -> bool:
