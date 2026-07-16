@@ -1,0 +1,25 @@
+[plugin]
+# 是否启用自回复硬拦截。
+enabled = true
+# 自动读取 MaiBot 主配置中的 bot.qq_account。
+auto_read_bot_account = true
+# 目标消息身份缓存秒数。
+cache_seconds = 120
+config_version = "1.0.0"
+
+[identity]
+# 额外机器人账号。多机器人、迁移账号或自动读取失败时在这里补充。
+# 支持纯 QQ 号和带平台格式，例如 ["123456789", "qq:987654321"]。
+bot_accounts = []
+
+[security]
+# 插件管理员，支持 ["123456789"] 或 ["qq:123456789"]。
+administrators = []
+# 继承 bot_config.toml 中 plugin.permission 的管理员。
+inherit_plugin_management_permissions = true
+# 普通群成员能否查看状态和统计。
+allow_public_status = true
+
+[storage]
+# 保存近期拦截记录的最大条数；0 表示只保存计数。
+history_limit = 50
