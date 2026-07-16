@@ -13,7 +13,12 @@ import re
 from maibot_sdk import Command, HookHandler, MaiBotPlugin, ON_BOT_CONFIG_RELOAD
 from maibot_sdk.types import ErrorPolicy, HookMode, HookOrder
 
-from .config import CONFIG_VERSION, SelfReplyGuardConfig
+from .config import (
+    CONFIG_VERSION,
+    SelfReplyGuardConfig,
+    coerce_config_data,
+    default_config_dict,
+)
 from .identity import (
     normalize_platform,
     normalize_token,
@@ -22,10 +27,21 @@ from .identity import (
 )
 from .storage import atomic_write_json, default_state, load_state, now_text
 
-# 已对照 MaiBot 1.0.0 / 1.0.1 / 1.0.6 / 1.0.9 / 1.0.12 源码确认存在的四层 Hook。
-COMPAT_HOST_MIN = "1.0.0"
+# 官方仓库无 0.0.x 标签；最早公开标签约 0.5.8-alpha。
+# 硬拦截所需四层 Hook 从 MaiBot 1.0.0-pre.1 起存在（SDK>=2.3.0）。
+# Host 版本比较会把 1.0.0-pre/rc 归一成 1.0.0；声明 0.0.0 只为避免异常版本号误杀。
+COMPAT_HOST_MIN = "0.0.0"
 COMPAT_HOST_MAX = "1.99.99"
-COMPAT_VERIFIED_HOSTS = ("1.0.0", "1.0.1", "1.0.6", "1.0.9", "1.0.12")
+COMPAT_SDK_MIN = "2.3.0"
+COMPAT_VERIFIED_HOSTS = (
+    "1.0.0-pre.1",
+    "1.0.0-rc.1",
+    "1.0.0",
+    "1.0.1",
+    "1.0.6",
+    "1.0.9",
+    "1.0.12",
+)
 
 
 class SelfReplyGuardPlugin(MaiBotPlugin):
@@ -42,6 +58,44 @@ class SelfReplyGuardPlugin(MaiBotPlugin):
         self._cache_lock = asyncio.Lock()
         self._target_cache: dict[tuple[str, str], tuple[bool, float]] = {}
         self._runtime_accounts: tuple[str, ...] = ()
+        # 保证即便 Runner 尚未注入配置，也能安全读默认值。
+        self._plugin_config_instance = SelfReplyGuardConfig()
+        self._plugin_config_data = default_config_dict()
+
+    def normalize_plugin_config(
+        self, config_data: Any
+    ) -> tuple[dict[str, Any], bool]:
+        """容错补齐配置，避免缺字段/缺 config_version 导致加载失败。"""
+
+        return coerce_config_data(config_data if isinstance(config_data, dict) else {})
+
+    def set_plugin_config(self, config: dict[str, Any]) -> None:
+        """设置配置；任何异常都回退到完整默认配置。"""
+
+        try:
+            normalized_config, _ = self.normalize_plugin_config(config)
+            self._plugin_config_data = normalized_config
+            self._plugin_config_instance = SelfReplyGuardConfig.model_validate(
+                normalized_config
+            )
+        except Exception:
+            fallback = default_config_dict()
+            self._plugin_config_data = fallback
+            self._plugin_config_instance = SelfReplyGuardConfig()
+
+    def _safe_config(self) -> SelfReplyGuardConfig:
+        """始终返回可用的配置实例。"""
+
+        instance = getattr(self, "_plugin_config_instance", None)
+        if isinstance(instance, SelfReplyGuardConfig):
+            return instance
+        try:
+            return self.config  # type: ignore[return-value]
+        except Exception:
+            fallback = SelfReplyGuardConfig()
+            self._plugin_config_instance = fallback
+            self._plugin_config_data = fallback.model_dump(mode="python")
+            return fallback
 
     def get_components(self) -> list[dict[str, Any]]:
         """收集组件并兼容 SDK 扩展元数据结构。"""
@@ -68,17 +122,19 @@ class SelfReplyGuardPlugin(MaiBotPlugin):
             self.ctx.logger.error("读取自回复拦截状态失败，已使用空白状态：%s", error)
             self._state = default_state()
         await self._refresh_runtime_accounts()
-        if self.config.plugin.config_version != CONFIG_VERSION:
+        config = self._safe_config()
+        if config.plugin.config_version != CONFIG_VERSION:
             self.ctx.logger.warning(
                 "插件配置版本为 %s，当前代码版本为 %s",
-                self.config.plugin.config_version,
+                config.plugin.config_version,
                 CONFIG_VERSION,
             )
         self.ctx.logger.info(
-            "机器人自回复硬拦截插件已加载，当前状态：%s；兼容 MaiBot %s-%s（已核验 %s）",
+            "机器人自回复硬拦截插件已加载，当前状态：%s；声明兼容 MaiBot %s-%s / SDK %s+（Hook 核验 %s）",
             "开启" if self._is_enabled() else "关闭",
             COMPAT_HOST_MIN,
             COMPAT_HOST_MAX,
+            COMPAT_SDK_MIN,
             "/".join(COMPAT_VERIFIED_HOSTS),
         )
         if self._configured_account_count() <= 0:
@@ -129,7 +185,7 @@ class SelfReplyGuardPlugin(MaiBotPlugin):
         administrator = await self._is_administrator(platform, user_id)
 
         if action in {"", "状态", "status", "统计", "stats"}:
-            if not administrator and not self.config.security.allow_public_status:
+            if not administrator and not self._safe_config().security.allow_public_status:
                 return await self._command_reply(
                     stream_id, False, "你没有权限查看拦截状态。"
                 )
@@ -327,7 +383,7 @@ class SelfReplyGuardPlugin(MaiBotPlugin):
         override = self._state.get("enabled_override")
         if isinstance(override, bool):
             return override
-        return bool(self.config.plugin.enabled)
+        return bool(self._safe_config().plugin.enabled)
 
     async def _target_is_configured_bot(
         self, session_id: str, reply_message_id: str
@@ -375,7 +431,7 @@ class SelfReplyGuardPlugin(MaiBotPlugin):
         return None
 
     def _message_is_configured_bot(self, message: dict[str, Any]) -> bool:
-        accounts = (*self.config.identity.bot_accounts, *self._runtime_accounts)
+        accounts = (*self._safe_config().identity.bot_accounts, *self._runtime_accounts)
         return sender_matches_accounts(message, accounts)
 
     async def _cached_target(
@@ -393,7 +449,7 @@ class SelfReplyGuardPlugin(MaiBotPlugin):
     ) -> None:
         if not reply_message_id:
             return
-        expires_at = monotonic() + int(self.config.plugin.cache_seconds)
+        expires_at = monotonic() + int(self._safe_config().plugin.cache_seconds)
         async with self._cache_lock:
             self._purge_cache(monotonic())
             self._target_cache[(session_id, reply_message_id)] = (is_self, expires_at)
@@ -408,7 +464,7 @@ class SelfReplyGuardPlugin(MaiBotPlugin):
 
     async def _refresh_runtime_accounts(self) -> None:
         accounts: list[str] = []
-        if self.config.plugin.auto_read_bot_account:
+        if self._safe_config().plugin.auto_read_bot_account:
             for key in (
                 "bot.qq_account",
                 "bot.account",
@@ -452,7 +508,7 @@ class SelfReplyGuardPlugin(MaiBotPlugin):
             self._state["last_event"] = event
             history = self._state.get("history")
             history = list(history) if isinstance(history, list) else []
-            history_limit = int(self.config.storage.history_limit)
+            history_limit = int(self._safe_config().storage.history_limit)
             self._state["history"] = (
                 (history + [event])[-history_limit:] if history_limit > 0 else []
             )
@@ -493,12 +549,12 @@ class SelfReplyGuardPlugin(MaiBotPlugin):
         candidates = {normalized_user, f"{normalized_platform}:{normalized_user}"}
         administrators = {
             normalize_token(item)
-            for item in self.config.security.administrators
+            for item in self._safe_config().security.administrators
             if normalize_token(item)
         }
         if candidates & administrators:
             return True
-        if not self.config.security.inherit_plugin_management_permissions:
+        if not self._safe_config().security.inherit_plugin_management_permissions:
             return False
         try:
             inherited = await self.ctx.config.get("plugin.permission", [])
@@ -542,7 +598,7 @@ class SelfReplyGuardPlugin(MaiBotPlugin):
     def _accounts_text(self) -> str:
         accounts = [
             str(item).strip()
-            for item in (*self.config.identity.bot_accounts, *self._runtime_accounts)
+            for item in (*self._safe_config().identity.bot_accounts, *self._runtime_accounts)
             if str(item).strip()
         ]
         if not accounts:
@@ -552,7 +608,7 @@ class SelfReplyGuardPlugin(MaiBotPlugin):
     def _configured_account_count(self) -> int:
         accounts = {
             normalize_token(item)
-            for item in (*self.config.identity.bot_accounts, *self._runtime_accounts)
+            for item in (*self._safe_config().identity.bot_accounts, *self._runtime_accounts)
             if normalize_token(item)
         }
         return len(accounts)
