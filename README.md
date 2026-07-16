@@ -14,22 +14,14 @@
 
 | 项目 | 声明范围 | 实际硬拦截能力 |
 |------|----------|----------------|
-| MaiBot Host | `0.0.0` ~ `1.99.99` | **需要** `1.0.0-pre.1` 及之后（含 rc / 正式版） |
+| MaiBot Host（主插件） | `0.0.0` ~ `1.99.99` | **需要** `1.0.0-pre.1` 及之后 |
 | maibot-plugin-sdk | `2.3.0` ~ `2.99.99` | 与 `1.0.0-pre.1` 对齐 |
+| MaiBot 0.10–0.12 | 见 `legacy_maibot_0x/` | 旧体系 `POST_SEND_PRE_PROCESS` 发送前拦截 |
 
-说明：
-
-- 官方仓库**没有** `0.0.x` 标签；公开最早标签约 `0.5.8-alpha`。
-- `0.5`～`0.12` 使用旧版 `BasePlugin` 插件体系，**没有**本插件依赖的四层命名 Hook，无法做同等硬拦截。
-- 从 [`1.0.0-pre.1`](https://github.com/Mai-with-u/MaiBot) 起，源码中已存在：
-  - `maisaka.planner.after_response`
-  - `maisaka.replyer.before_request`
-  - `maisaka.replyer.after_response`
-  - `send_service.before_send`
-- Host 版本比较会把 `1.0.0-pre.*` / `1.0.0-rc.*` 归一为 `1.0.0`。
-- Manifest 声明 `0.0.0` 是为了避免异常/自定义版本号被误拒；真正拦截仍依赖上述 Hook。
-
-已核验标签：`1.0.0-pre.1`、`1.0.0-rc.1`、`1.0.0`、`1.0.1`、`1.0.6`、`1.0.9`、`1.0.12`。
+- 官方仓库**没有** `0.0.x` 标签；公开最早约 `0.5.8-alpha`。
+- `0.5`～`0.9` 更早期架构差异更大，本仓库不保证可用。
+- `0.10`～`0.12`：请安装 [`legacy_maibot_0x/`](legacy_maibot_0x/README.md)，**不要**用根目录主插件。
+- `1.0.0-pre.1+`：安装仓库根目录主插件（四层 Hook）。
 
 ## 配置容错
 

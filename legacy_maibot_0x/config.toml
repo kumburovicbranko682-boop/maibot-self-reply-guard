@@ -1,0 +1,15 @@
+# self_reply_guard_legacy - 自动生成的配置文件
+
+[plugin]
+# 是否启用发送前自回复拦截
+enabled = true
+config_version = "1.0.0"
+
+[identity]
+# 额外机器人账号。支持纯 QQ 号或 qq:123456；为空时使用主配置 bot.qq_account / is_bot_self
+bot_accounts = []
+
+[security]
+# 可使用 QQ 指令的管理员；为空则仅允许主配置中的机器人主人逻辑（本插件默认允许所有人查看状态）
+administrators = []
+allow_public_status = true

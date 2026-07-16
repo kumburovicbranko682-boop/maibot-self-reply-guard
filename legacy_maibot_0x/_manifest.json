@@ -1,0 +1,19 @@
+{
+  "manifest_version": 1,
+  "name": "机器人自回复硬拦截（0.x 兼容版）",
+  "version": "1.0.0",
+  "description": "面向 MaiBot 0.10–0.12 旧插件体系：在 POST_SEND_PRE_PROCESS 拦截回复自身历史消息的发送。",
+  "author": {
+    "name": "kumburovicbranko682-boop",
+    "url": "https://github.com/kumburovicbranko682-boop"
+  },
+  "license": "MIT",
+  "host_application": {
+    "min_version": "0.10.1"
+  },
+  "homepage_url": "https://github.com/kumburovicbranko682-boop/maibot-self-reply-guard",
+  "repository_url": "https://github.com/kumburovicbranko682-boop/maibot-self-reply-guard",
+  "keywords": ["self-reply", "guard", "legacy", "0.x"],
+  "categories": ["Moderation"],
+  "default_locale": "zh-CN"
+}
